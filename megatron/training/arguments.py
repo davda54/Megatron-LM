@@ -1977,12 +1977,12 @@ def _add_training_args(parser):
                        'If None, the default backend will be used.')
     group.add_argument('--high-priority-stream-groups', nargs='*', type=str, default=[],
                        help='The communicator group names to use high priority streams.')
-    group.add_argument('--pre-layer-norm', action='store_true', type=bool, default=False,
+    group.add_argument('--pre-layer-norm', action='store_true', default=False,
                        help='Use pre-layer normalization in transformer layers.')
-    group.add_argument('--post-layer-norm', action='store_true', type=bool, default=False,
+    group.add_argument('--post-layer-norm', action='store_true', default=False,
                        help='Use post-layer normalization (OLMo-style) in transformer layers.')
     group.add_argument('--hf_checkpoint', type=str, default=None)
-    group.add_argument('--freeze_transformer', action='store_true', type=bool, default=False)
+    group.add_argument('--freeze_transformer', action='store_true', default=False)
 
     return parser
 
