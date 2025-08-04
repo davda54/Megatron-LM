@@ -193,6 +193,10 @@ class TransformerConfig(ModelParallelConfig):
     moe_deepep_num_sms: int = 20
     """Number of SMs to use for DeepEP."""
 
+    pre_layer_norm: bool = False
+
+    post_layer_norm: bool = True
+
     ####################
     # initialization
     ####################
@@ -228,6 +232,8 @@ class TransformerConfig(ModelParallelConfig):
     If True, initializes the model with the meta device. This is helpful for
     training of very large models. This feature is only works when custom fsdp is turned on.
     """
+
+    hf_checkpoint: str = None
 
     ####################
     # mixed-precision

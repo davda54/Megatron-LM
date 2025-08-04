@@ -2,9 +2,11 @@
 
 from collections import OrderedDict
 from typing import Dict, Literal, Optional
+import json
 
 import torch
 from torch import Tensor
+from safetensors import safe_open
 
 from megatron.core import tensor_parallel
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
@@ -29,7 +31,11 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import WrappedTensor, deprecate_inference_params
-
+from megatron.core.parallel_state import (
+    get_tensor_model_parallel_group,
+    get_tensor_model_parallel_rank,
+    get_tensor_model_parallel_world_size,
+)
 
 class GPTModel(LanguageModule):
     """GPT Transformer language model.
@@ -118,6 +124,14 @@ class GPTModel(LanguageModule):
         else:
             self.position_embedding_type = position_embedding_type
 
+        if config.hf_checkpoint is not None:
+            with open(f"{config.hf_checkpoint}/model.safetensors.index.json", "r") as f:
+                self.hf_weight_map = json.load(f)["weight_map"]
+            self.hf_checkpoint_files = {
+                filename: safe_open(f"{config.hf_checkpoint}/{filename}", framework="pt", device="cpu")
+                for filename in set(self.hf_weight_map.values())
+            }
+
         # megatron core pipelining currently depends on model type
         # TODO: remove this dependency ?
         self.model_type = ModelType.encoder_or_decoder
@@ -134,6 +148,9 @@ class GPTModel(LanguageModule):
         self.mtp_block_spec = mtp_block_spec
         self.mtp_process = mtp_block_spec is not None
 
+        world_size = get_tensor_model_parallel_world_size()
+        rank = get_tensor_model_parallel_rank()
+
         if self.pre_process or self.mtp_process:
             self.embedding = LanguageModelEmbedding(
                 config=self.config,
@@ -143,6 +160,11 @@ class GPTModel(LanguageModule):
                 scatter_to_sequence_parallel=scatter_embedding_sequence_parallel,
                 tp_group=self.model_comm_pgs.tp,
             )
+            if config.hf_checkpoint is not None:
+                weight = self.get_hf_weight("model.embed_tokens.weight")
+                weight = weight[rank * self.embedding.word_embeddings.weight.shape[0]:(rank + 1) * self.embedding.word_embeddings.weight.shape[0]]
+                assert weight.shape == self.embedding.word_embeddings.weight.shape, f"{weight.shape} != {self.embedding.word_embeddings.weight.shape}"
+                self.embedding.word_embeddings.weight.data = weight
 
         if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
             self.rotary_pos_emb = RotaryEmbedding(
@@ -182,6 +204,69 @@ class GPTModel(LanguageModule):
             model_comm_pgs=self.model_comm_pgs,
             vp_stage=vp_stage,
         )
+
+        if config.hf_checkpoint is not None:
+            for layer in self.decoder.layers:
+                layer_number = layer.layer_number
+
+                if config.pre_layer_norm:
+                    tensor_attention_layernorm = self.get_hf_weight(f"model.layers.{layer_number - 1}.input_layernorm.weight").to(layer.self_attention.linear_qkv.layer_norm_weight)
+                    assert tensor_attention_layernorm.shape == layer.self_attention.linear_qkv.layer_norm_weight.shape, f"{tensor_attention_layernorm.shape} != {layer.self_attention.linear_qkv.layer_norm_weight.shape}"
+                    layer.self_attention.linear_qkv.layer_norm_weight.data = tensor_attention_layernorm
+
+                if config.qk_layernorm:
+                    q_layernorm = self.get_hf_weight(f"model.layers.{layer_number - 1}.self_attn.q_norm.weight").to(layer.self_attention.q_layernorm.weight)
+                    assert q_layernorm.shape == layer.self_attention.q_layernorm.weight.shape, f"{q_layernorm.shape} != {layer.self_attention.q_layernorm.weight.shape}"
+                    layer.self_attention.q_layernorm.weight.data = q_layernorm
+
+                    k_layernorm = self.get_hf_weight(f"model.layers.{layer_number - 1}.self_attn.k_norm.weight").to(layer.self_attention.k_layernorm.weight)
+                    assert k_layernorm.shape == layer.self_attention.k_layernorm.weight.shape, f"{k_layernorm.shape} != {layer.self_attention.k_layernorm.weight.shape}"
+                    layer.self_attention.k_layernorm.weight.data = k_layernorm
+
+                if config.post_layer_norm:
+                    tensor_post_layernorm = self.get_hf_weight(f"model.layers.{layer_number - 1}.post_attention_layernorm.weight").to(layer.self_attention.post_layer_norm.weight)
+                    assert tensor_post_layernorm.shape == layer.self_attention.post_layer_norm.weight.shape, f"{tensor_post_layernorm.shape} != {layer.self_attention.post_layer_norm.weight.shape}"
+                    layer.self_attention.post_layer_norm.weight.data = tensor_post_layernorm
+
+                num_heads = config.num_attention_heads // world_size
+                num_query_groups = config.num_query_groups // world_size
+                num_queries_per_group = num_heads // num_query_groups
+                dim = config.kv_channels
+
+                tensor_q = self.get_hf_weight(f"model.layers.{layer_number - 1}.self_attn.q_proj.weight").chunk(world_size, 0)[rank].to(layer.self_attention.linear_qkv.weight)
+                tensor_k = self.get_hf_weight(f"model.layers.{layer_number - 1}.self_attn.k_proj.weight").chunk(world_size, 0)[rank].to(layer.self_attention.linear_qkv.weight)
+                tensor_v = self.get_hf_weight(f"model.layers.{layer_number - 1}.self_attn.v_proj.weight").chunk(world_size, 0)[rank].to(layer.self_attention.linear_qkv.weight)
+                tensor_qkv = torch.cat([
+                    tensor_q.reshape((num_query_groups, num_queries_per_group*dim, -1)),
+                    tensor_k.reshape((num_query_groups, dim, -1)),
+                    tensor_v.reshape((num_query_groups, dim, -1)),
+                ], dim=1).reshape((-1, config.hidden_size))
+                assert tensor_qkv.shape == layer.self_attention.linear_qkv.weight.shape, f"{tensor_qkv.shape} != {layer.self_attention.linear_qkv.weight.shape}"
+                layer.self_attention.linear_qkv.weight.data = tensor_qkv
+
+                tensor_out = self.get_hf_weight(f"model.layers.{layer_number - 1}.self_attn.o_proj.weight").chunk(world_size, 1)[rank].to(layer.self_attention.linear_proj.weight)
+                assert tensor_out.shape == layer.self_attention.linear_proj.weight.shape, f"{tensor_out.shape} != {layer.self_attention.linear_proj.weight.shape}"
+                layer.self_attention.linear_proj.weight.data = tensor_out
+
+                if config.pre_layer_norm:
+                    tensor_mlp_layernorm = self.get_hf_weight(f"model.layers.{layer_number - 1}.post_attention_layernorm.weight").to(layer.mlp.linear_fc1.layer_norm_weight)
+                    assert tensor_mlp_layernorm.shape == layer.mlp.linear_fc1.layer_norm_weight.shape, f"{tensor_mlp_layernorm.shape} != {layer.mlp.linear_fc1.layer_norm_weight.shape}"
+                    layer.mlp.linear_fc1.layer_norm_weight.data = tensor_mlp_layernorm
+                
+                if config.post_layer_norm:
+                    tensor_mlp_post_layernorm = self.get_hf_weight(f"model.layers.{layer_number - 1}.post_feedforward_layernorm.weight").to(layer.mlp.post_layer_norm.weight)
+                    assert tensor_mlp_post_layernorm.shape == layer.mlp.post_layer_norm.weight.shape, f"{tensor_mlp_post_layernorm.shape} != {layer.mlp.post_layer_norm.weight.shape}"
+                    layer.mlp.post_layer_norm.weight.data = tensor_mlp_post_layernorm
+
+                tensor_up = self.get_hf_weight(f"model.layers.{layer_number - 1}.mlp.up_proj.weight").chunk(world_size, 0)[rank].to(layer.mlp.linear_fc1.weight)
+                tensor_gate = self.get_hf_weight(f"model.layers.{layer_number - 1}.mlp.gate_proj.weight").chunk(world_size, 0)[rank].to(layer.mlp.linear_fc1.weight)
+                tensor_up = torch.cat([tensor_gate, tensor_up], dim=0)
+                assert tensor_up.shape == layer.mlp.linear_fc1.weight.shape, f"{tensor_up.shape} != {layer.mlp.linear_fc1.weight.shape}"
+                layer.mlp.linear_fc1.weight.data = tensor_up
+
+                tensor_down = self.get_hf_weight(f"model.layers.{layer_number - 1}.mlp.down_proj.weight").chunk(world_size, 1)[rank].to(layer.mlp.linear_fc2.weight)
+                assert tensor_down.shape == layer.mlp.linear_fc2.weight.shape, f"{tensor_down.shape} != {layer.mlp.linear_fc2.weight.shape}"
+                layer.mlp.linear_fc2.weight.data = tensor_down
 
         if self.mtp_process:
             self.mtp = MultiTokenPredictionBlock(
@@ -224,6 +309,15 @@ class GPTModel(LanguageModule):
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
 
+        if config.hf_checkpoint is not None:
+            tensor_output_layernorm = self.get_hf_weight(f"model.norm.weight").to(self.decoder.final_layernorm.weight)
+            assert tensor_output_layernorm.shape == self.decoder.final_layernorm.weight.shape, f"{tensor_output_layernorm.shape} != {self.decoder.final_layernorm.weight.shape}"
+            self.decoder.final_layernorm.weight.data = tensor_output_layernorm
+
+            tensor_lm_head = self.get_hf_weight("lm_head.weight")[rank * self.output_layer.weight.shape[0]:(rank + 1) * self.output_layer.weight.shape[0]]
+            assert tensor_lm_head.shape == self.output_layer.weight.shape, f"{tensor_lm_head.shape} != {self.output_layer.weight.shape}"
+            self.output_layer.weight.data = tensor_lm_head
+
         if has_config_logger_enabled(self.config):
             log_config_to_disk(
                 self.config, self.state_dict(), prefix=f'{type(self).__name__}_init_ckpt'
@@ -232,6 +326,15 @@ class GPTModel(LanguageModule):
             if hasattr(module, 'finish_init'):
                 quant_config = get_quant_config_or_none(name, self.config.quant_recipe)
                 module.finish_init(quant_config)
+
+        del self.hf_weight_map, self.hf_checkpoint_files
+
+    def get_hf_weight(self, tensor_name: str):
+        if tensor_name in self.hf_weight_map:
+            file_name = self.hf_weight_map[tensor_name]
+            return self.hf_checkpoint_files[file_name].get_tensor(tensor_name)
+        else:
+            raise KeyError(f"Tensor {tensor_name} not found in index")
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
