@@ -404,7 +404,7 @@ def get_gpt_decoder_block_spec(
     use_transformer_engine: bool,
     normalization: Optional[str] = None,
     qk_l2_norm: Optional[bool] = False,
-    vp_stage: Optional[int] = None,
+    vp_stage: Optional[int] = None
 ) -> TransformerBlockSubmodules:
     """GPT block spec."""
     if use_transformer_engine:
@@ -417,6 +417,8 @@ def get_gpt_decoder_block_spec(
             moe_use_legacy_grouped_gemm=config.moe_use_legacy_grouped_gemm,
             qk_l2_norm=qk_l2_norm,
             use_kitchen=config.use_kitchen,
+            use_pre_layer_norm=config.pre_layer_norm,
+            use_post_layer_norm=config.post_layer_norm
         )
         moe_layer_spec = get_gpt_layer_with_transformer_engine_spec(
             num_experts=config.num_moe_experts,
@@ -426,6 +428,8 @@ def get_gpt_decoder_block_spec(
             moe_use_legacy_grouped_gemm=config.moe_use_legacy_grouped_gemm,
             qk_l2_norm=qk_l2_norm,
             use_kitchen=config.use_kitchen,
+            use_pre_layer_norm=config.pre_layer_norm,
+            use_post_layer_norm=config.post_layer_norm
         )
     else:
         layer_norm_impl = LNImpl

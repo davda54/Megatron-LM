@@ -79,6 +79,8 @@ def _get_transformer_layer_spec(use_te, config):
             args.moe_use_legacy_grouped_gemm,
             qk_l2_norm=args.qk_l2_norm,
             use_kitchen=config.use_kitchen,
+            use_pre_layer_norm=args.pre_layer_norm,
+            use_post_layer_norm=args.post_layer_norm
         )
     else:
         return get_gpt_layer_local_spec(
