@@ -79,6 +79,8 @@ def get_gpt_layer_with_transformer_engine_spec(
     qk_l2_norm: Optional[bool] = False,
     use_te_op_fuser: Optional[bool] = False,
     use_kitchen: bool = False,
+    use_pre_layer_norm: bool = False,
+    use_post_layer_norm: bool = False
 ) -> ModuleSpec:
     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
 
@@ -118,6 +120,8 @@ def get_gpt_layer_with_transformer_engine_spec(
         moe_grouped_gemm=moe_grouped_gemm,
         moe_use_legacy_grouped_gemm=moe_use_legacy_grouped_gemm,
         use_te_op_fuser=use_te_op_fuser,
+        use_pre_layer_norm=use_pre_layer_norm,
+        use_post_layer_norm=use_post_layer_norm
     )
 
     if multi_latent_attention:
@@ -166,9 +170,10 @@ def get_gpt_layer_with_transformer_engine_spec(
                     module=SelfAttention,
                     params={"attn_mask_type": AttnMaskType.causal},
                     submodules=SelfAttentionSubmodules(
-                        linear_qkv=backend.column_parallel_layer_norm_linear(),
+                        linear_qkv=backend.column_parallel_layer_norm_linear() if use_pre_layer_norm else backend.column_parallel_linear(),
                         core_attention=backend.core_attention(),
                         linear_proj=backend.row_parallel_linear(),
+                        post_layer_norm=backend.layer_norm() if use_post_layer_norm else IdentityOp,
                         q_layernorm=(
                             L2Norm if qk_l2_norm else (qk_norm if qk_layernorm else IdentityOp)
                         ),
@@ -365,6 +370,8 @@ def get_mlp_module_spec_for_backend(
     moe_grouped_gemm: Optional[bool] = False,
     moe_use_legacy_grouped_gemm: Optional[bool] = False,
     use_te_op_fuser: Optional[bool] = False,
+    use_pre_layer_norm=False,
+    use_post_layer_norm=False
 ) -> ModuleSpec:
     """Helper function to get module spec for MLP/MoE"""
 
@@ -375,12 +382,12 @@ def get_mlp_module_spec_for_backend(
         if use_te_op_fuser:
             return ModuleSpec(module=TEFusedMLP)
         elif backend.fuse_layernorm_and_linear():
-            linear_fc1 = backend.column_parallel_layer_norm_linear()
+            linear_fc1 = backend.column_parallel_layer_norm_linear() if use_pre_layer_norm else backend.column_parallel_linear()
             assert linear_fc1 is not None
         else:
             linear_fc1 = backend.column_parallel_linear()
         return ModuleSpec(
-            module=MLP, submodules=MLPSubmodules(linear_fc1=linear_fc1, linear_fc2=linear_fc2)
+            module=MLP, submodules=MLPSubmodules(linear_fc1=linear_fc1, linear_fc2=linear_fc2, post_layer_norm=backend.layer_norm() if use_post_layer_norm else IdentityOp)
         )
     else:
         # Mixture of experts with modules in megatron core.

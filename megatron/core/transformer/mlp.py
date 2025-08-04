@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 class MLPSubmodules:
     linear_fc1: Union[ModuleSpec, type] = None
     linear_fc2: Union[ModuleSpec, type] = None
+    post_layer_norm: Union[ModuleSpec, type] = None
 
 
 class MLP(MegatronModule):
@@ -124,6 +125,13 @@ class MLP(MegatronModule):
             tp_group=tp_group,
         )
 
+        self.post_layer_norm = build_module(
+            submodules.post_layer_norm,
+            config=self.config,
+            hidden_size=self.config.hidden_size,
+            eps=self.config.layernorm_epsilon,
+        )
+
     def forward(self, hidden_states, per_token_scale=None):
         """Perform the forward pass through the MLP block."""
         # [s, b, 4 * h/p]
@@ -187,6 +195,8 @@ class MLP(MegatronModule):
         nvtx_range_push(suffix="linear_fc2")
         output, output_bias = self.linear_fc2(intermediate_parallel)
         nvtx_range_pop(suffix="linear_fc2")
+
+        output = self.post_layer_norm(output)
 
         if per_token_scale is not None:
             assert output_bias is None, "Bias is not supported with per_token_scale"
