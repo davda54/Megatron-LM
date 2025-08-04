@@ -174,6 +174,8 @@ class OptimizerConfig:
     config_logger_dir: str = ""
     """When non-empty, dumps entry-point configs to config_logger_dir"""
 
+    freeze_transformer: bool = False
+
     def __post_init__(self):
         """Check the validity of the config."""
 
