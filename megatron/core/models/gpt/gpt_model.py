@@ -327,7 +327,8 @@ class GPTModel(LanguageModule):
                 quant_config = get_quant_config_or_none(name, self.config.quant_recipe)
                 module.finish_init(quant_config)
 
-        del self.hf_weight_map, self.hf_checkpoint_files
+        if config.hf_checkpoint is not None:
+            del self.hf_weight_map, self.hf_checkpoint_files
 
     def get_hf_weight(self, tensor_name: str):
         if tensor_name in self.hf_weight_map:
