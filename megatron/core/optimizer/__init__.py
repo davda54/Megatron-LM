@@ -228,11 +228,9 @@ def _update_min_and_max_lr_in_param_groups(
             assert decoupled_lr is not None
             param_group['max_lr'] = decoupled_lr * param_group["lr_mult"]
             param_group['min_lr'] = decoupled_min_lr * param_group["lr_mult"]
-            param_group['lr'] = param_group['lr'] * param_group['lr_mult']
         else:
             param_group['max_lr'] = lr * param_group["lr_mult"]
             param_group['min_lr'] = min_lr * param_group["lr_mult"]
-            param_group['lr'] = param_group['lr'] * param_group['lr_mult']
     return param_groups
 
 
