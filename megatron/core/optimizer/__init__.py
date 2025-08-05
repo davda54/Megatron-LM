@@ -106,9 +106,6 @@ def _get_param_groups(
             if not param.requires_grad:
                 continue
 
-            if freeze_transformer and "word_embeddings" not in name and "output_layer" not in name:
-                continue
-
             is_expert_parallel = not getattr(param, 'allreduce', True)
 
             if no_weight_decay_cond is not None:
@@ -137,6 +134,9 @@ def _get_param_groups(
                 wd_mult, _lr_mult = 0.0, 1.0
             else:
                 wd_mult, _lr_mult = 0.0, lr_mult
+
+            if freeze_transformer and "word_embeddings" not in name and "output_layer" not in name:
+                _lr_mult = 0.0
 
             is_decoupled_lr = False
             # For input/embedding and output layer: embedding.word_embeddings.weight /
@@ -226,11 +226,13 @@ def _update_min_and_max_lr_in_param_groups(
     for param_group in param_groups:
         if param_group['is_decoupled_lr']:
             assert decoupled_lr is not None
-            param_group['max_lr'] = decoupled_lr
-            param_group['min_lr'] = decoupled_min_lr
+            param_group['max_lr'] = decoupled_lr * param_group["lr_mult"]
+            param_group['min_lr'] = decoupled_min_lr * param_group["lr_mult"]
+            param_group['lr'] = param_group['lr'] * param_group['lr_mult']
         else:
-            param_group['max_lr'] = lr
-            param_group['min_lr'] = min_lr
+            param_group['max_lr'] = lr * param_group["lr_mult"]
+            param_group['min_lr'] = min_lr * param_group["lr_mult"]
+            param_group['lr'] = param_group['lr'] * param_group['lr_mult']
     return param_groups
 
 
