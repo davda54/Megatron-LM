@@ -833,7 +833,7 @@ class SelfAttention(Attention):
         if submodules.q_layernorm is not None:
             self.q_layernorm = build_module(
                 submodules.q_layernorm,
-                hidden_size=self.hidden_size_per_attention_head,
+                hidden_size=self.config.hidden_size,
                 config=self.config,
                 eps=self.config.layernorm_epsilon,
             )
@@ -843,7 +843,7 @@ class SelfAttention(Attention):
         if submodules.k_layernorm is not None:
             self.k_layernorm = build_module(
                 submodules.k_layernorm,
-                hidden_size=self.hidden_size_per_attention_head,
+                hidden_size=self.config.hidden_size,
                 config=self.config,
                 eps=self.config.layernorm_epsilon,
             )
@@ -958,15 +958,17 @@ class SelfAttention(Attention):
             # [sq, b, ng, (np/ng + 2) * hn]
             # --> [sq, b, ng, np/ng * hn], [sq, b, ng, hn], [sq, b, ng, hn]
             (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
+        
+        if self.q_layernorm is not None:
+            original_shape = query.shape
+            query = self.q_layernorm(query.flatten(-2, -1)).view(original_shape)
+
+        if self.k_layernorm is not None:
+            original_shape = key.shape
+            key = self.k_layernorm(key.flatten(-2, -1)).view(original_shape)
 
         # [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
-
-        if self.q_layernorm is not None:
-            query = self.q_layernorm(query)
-
-        if self.k_layernorm is not None:
-            key = self.k_layernorm(key)
 
         if self.config.test_mode:
             self.run_realtime_tests()
