@@ -129,10 +129,8 @@ class OptimizerParamScheduler:
         max_lr = param_group.get('max_lr', self.max_lr)
         min_lr = param_group.get('min_lr', self.min_lr)
 
-        step = self.num_steps
-        if "delay" in param_group:
-            step = step - param_group["delay"]
-        
+        step = self.num_steps - param_group["delay"]
+
         if step < 0:
             return 0.0
 
