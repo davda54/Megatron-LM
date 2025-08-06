@@ -1983,6 +1983,8 @@ def _add_training_args(parser):
                        help='Use post-layer normalization (OLMo-style) in transformer layers.')
     group.add_argument('--hf_checkpoint', type=str, default=None)
     group.add_argument('--freeze_transformer', action='store_true', default=False)
+    group.add_argument('--freeze_iters', type=int, default=1000,
+                       help='Number of iterations to freeze the transformer weights for.')
 
     return parser
 

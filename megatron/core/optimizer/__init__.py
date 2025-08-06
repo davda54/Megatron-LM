@@ -55,7 +55,8 @@ def _get_param_groups(
     decoupled_lr: Optional[float],
     decoupled_min_lr: Optional[float],
     default_skip_embedding_weight_decay: bool = False,
-    freeze_transformer: bool = False
+    freeze_transformer: bool = False,
+    freeze_iters: int = 1000
 ) -> List[Dict]:
     """Create parameter groups for optimizer.
 
@@ -136,7 +137,9 @@ def _get_param_groups(
                 wd_mult, _lr_mult = 0.0, lr_mult
 
             if freeze_transformer and "word_embeddings" not in name and "output_layer" not in name:
-                _lr_mult = 0.0
+                delay = freeze_iters
+            else:
+                delay = 0
 
             is_decoupled_lr = False
             # For input/embedding and output layer: embedding.word_embeddings.weight /
@@ -146,7 +149,7 @@ def _get_param_groups(
             ):
                 is_decoupled_lr = True
 
-            key = (wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr)
+            key = (wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr, delay)
             if key not in params_map:
                 params_map[key] = []
             if (
@@ -170,7 +173,7 @@ def _get_param_groups(
 
     param_groups = []
     for key in params_key:
-        wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr = key
+        wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr, delay = key
         params = params_map[key] if key in params_map else []
         param_group = {
             'params': params,
@@ -178,6 +181,7 @@ def _get_param_groups(
             'lr_mult': _lr_mult,
             'is_expert_parallel': is_expert_parallel,
             'is_decoupled_lr': is_decoupled_lr,
+            'delay': delay
         }
         # Ensure param_group has required keys for matching when loading optimizer state
         # See MegatronOptimizer._filter_and_reorder_param_groups.
@@ -226,11 +230,11 @@ def _update_min_and_max_lr_in_param_groups(
     for param_group in param_groups:
         if param_group['is_decoupled_lr']:
             assert decoupled_lr is not None
-            param_group['max_lr'] = decoupled_lr * param_group["lr_mult"]
-            param_group['min_lr'] = decoupled_min_lr * param_group["lr_mult"]
+            param_group['max_lr'] = decoupled_lr
+            param_group['min_lr'] = decoupled_min_lr
         else:
-            param_group['max_lr'] = lr * param_group["lr_mult"]
-            param_group['min_lr'] = min_lr * param_group["lr_mult"]
+            param_group['max_lr'] = lr
+            param_group['min_lr'] = min_lr
     return param_groups
 
 
@@ -244,7 +248,8 @@ def _get_param_groups_and_buffers(
     filter_fn: Callable,
     buffer_name: str,
     default_skip_embedding_weight_decay: bool = False,
-    freeze_transformer: bool = False
+    freeze_transformer: bool = False,
+    freeze_iters: int = 1000
 ) -> Tuple[List[Dict], Dict[int, List[_ParamAndGradBuffer]]]:
     """Returns parameter groups and buffer for optimizer.
 
@@ -279,7 +284,8 @@ def _get_param_groups_and_buffers(
         decoupled_lr=config.decoupled_lr,
         decoupled_min_lr=config.decoupled_min_lr,
         default_skip_embedding_weight_decay=default_skip_embedding_weight_decay,
-        freeze_transformer=freeze_transformer
+        freeze_transformer=freeze_transformer,
+        freeze_iters=freeze_iters
     )
     param_groups = list(filter(filter_fn, param_groups))
     buffers = {}
@@ -671,7 +677,8 @@ def get_megatron_optimizer(
                 filter_fn=lambda g: True,
                 buffer_name='buffers',
                 default_skip_embedding_weight_decay=default_skip_embedding_weight_decay,
-                freeze_transformer=config.freeze_transformer
+                freeze_transformer=config.freeze_transformer,
+                freeze_iters=config.freeze_iters
             )
 
             optimizers.append(
@@ -707,7 +714,8 @@ def get_megatron_optimizer(
             filter_fn=lambda g: not g['is_expert_parallel'],
             buffer_name='buffers',
             default_skip_embedding_weight_decay=default_skip_embedding_weight_decay,
-            freeze_transformer=config.freeze_transformer
+            freeze_transformer=config.freeze_transformer,
+            freeze_iters=config.freeze_iters
         )
         for model_chunk in dense_model_chunks:
             model_chunk.overlap_param_gather_with_optimizer_step = (
@@ -740,7 +748,8 @@ def get_megatron_optimizer(
         filter_fn=lambda g: g['is_expert_parallel'],
         buffer_name='expert_parallel_buffers',
         default_skip_embedding_weight_decay=default_skip_embedding_weight_decay,
-        freeze_transformer=config.freeze_transformer
+        freeze_transformer=config.freeze_transformer,
+        freeze_iters=config.freeze_iters
     )
     if len(moe_param_groups) > 0:
         expt_model_parallel_rank = get_pg_rank(expt_tp_pp_group)

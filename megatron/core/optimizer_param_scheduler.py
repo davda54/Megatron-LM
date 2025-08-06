@@ -129,10 +129,17 @@ class OptimizerParamScheduler:
         max_lr = param_group.get('max_lr', self.max_lr)
         min_lr = param_group.get('min_lr', self.min_lr)
 
+        step = self.num_steps
+        if "delay" in param_group:
+            step = step - param_group["delay"]
+        
+        if step < 0:
+            return 0.0
+
         # Use linear warmup for the initial part.
-        if self.lr_warmup_steps > 0 and self.num_steps <= self.lr_warmup_steps:
+        if self.lr_warmup_steps > 0 and step <= self.lr_warmup_steps:
             return self.init_lr + (
-                (max_lr - self.init_lr) * float(self.num_steps) / float(self.lr_warmup_steps)
+                (max_lr - self.init_lr) * float(step) / float(self.lr_warmup_steps)
             )
 
         # If the learning rate is constant, just return the initial value.
