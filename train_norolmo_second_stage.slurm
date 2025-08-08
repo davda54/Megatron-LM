@@ -99,34 +99,32 @@ export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 export MASTER_PORT=8888    # TODO add in job ID
 export WORLD_SIZE=$SLURM_NTASKS    # Note: only valid if ntasks==ngpus
 
-# OMP THREADING
-export OMP_NUM_THREADS=2   # OMP_NUM_THREADS=1 is the safe option
-export HSA_ENABLE_SDMA=0
+# NVIDIA GH200 Optimizations
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export CUDA_LAUNCH_BLOCKING=0
+export CUDNN_BENCHMARK=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_MANAGED_FORCE_DEVICE_ALLOC=1
 
-# This setting is reported to provide a performance improvement
-# (https://arxiv.org/pdf/2408.14090v1) but as of April 2025 is causing
-# training instability on LUMI with pipeline parallelism.
-# (see https://github.com/spyysalo/lumi-fineweb-replication/issues/1)
-#export NCCL_NCHANNELS_PER_PEER=32
+# NCCL Configuration for NVIDIA
+export NCCL_IB_DISABLE=0
+export NCCL_NET_GDR_LEVEL=5
+export NCCL_P2P_LEVEL=NVL
+export NCCL_TREE_THRESHOLD=0
+export NCCL_CROSS_NIC=1
+export NCCL_COLLNET_ENABLE=0
+# Update with your actual network interfaces:
+# export NCCL_SOCKET_IFNAME=eth0,ib0  
 
-# Set interfaces to be used by RCCL.
-# This is needed as otherwise RCCL tries to use a network interface it has
-# no access to on LUMI.
-# export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
-# export NCCL_NET_GDR_LEVEL=PHB
-#export NCCL_DMABUF_ENABLE=1
-# export HSA_FORCE_FINE_GRAIN_PCIE=1
+# Threading optimization for Grace CPU
+export OMP_NUM_THREADS=8
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
 
-# DEBUGGING, INCREASE VERBOSITY IN LOGS
-# export MIOPEN_ENABLE_LOGGING=1
-export PYTHONWARNINGS=ignore
-# export TORCH_SHOW_CPP_STACKTRACES=1
-# export NCCL_DEBUG=INFO
-# export RCCL_KERNEL_COLL_TRACE_ENABLE=1
-# export NCCL_DEBUG_SUBSYS=ALL
-# export NCCL_DEBUG_FILE=$OUTPUT_DIR/nccl-debug-${SLURM_JOB_NAME}-${SLURM_JOBID}.log #Move verbose nccl logging to its own file
-export NVTE_DEBUG=0
-export NVTE_DEBUG_LEVEL=0
+# Distributed settings
+export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
+export MASTER_PORT=$((8888 + SLURM_JOBID % 1000))
+export WORLD_SIZE=$SLURM_NTASKS
 
 ######################################################################
 #
@@ -390,6 +388,8 @@ echo "SLURM_NNODES: $SLURM_NNODES"
 echo "SLURM_CPUS_PER_TASK: $SLURM_CPUS_PER_TASK"
 
 srun \
+    --cpu-bind=verbose,cores \
+    --distribution=block:block \
     --label \
     "$LAUNCH_SCRIPT" \
     $COMMAND
